@@ -72,7 +72,13 @@ def _render_basket_editor(state: dict) -> None:
 
 
 def _do_rebalance(state: dict, df: pd.DataFrame, thesis: str) -> None:
-    """Apply edited basket as a rebalance: liquidate at NAV, reinvest into new picks."""
+    """Apply edited basket as a rebalance: liquidate at NAV, reinvest into new picks.
+
+    Captures trade prices so chart markers and cost-basis calcs are accurate:
+      - SELL prices come from existing holdings' lastPrice (free, no network).
+      - BUY prices: kept-positions reuse their lastPrice; new tickers are quoted
+        once via fetch_single_quote so the rebalance lands fully marked.
+    """
     # Validate + normalise weights
     picks = []
     for _, row in df.iterrows():
@@ -95,18 +101,57 @@ def _do_rebalance(state: dict, df: pd.DataFrame, thesis: str) -> None:
         p["targetWeight"] = round(p["weight"] / total, 4)
 
     from app.state import get_portfolio_value
+    from app import market
     nav = get_portfolio_value(state)
     ts = now_iso()
 
-    # Liquidate
+    # ─── Build price + quote lookups ───────────────────────────────────
+    # Snapshot old holdings BEFORE we mutate state["holdings"]
+    old_by_ticker = {h["ticker"]: h for h in state["holdings"]}
+
+    price_lookup: dict[str, float] = {}    # ticker → price
+    quote_lookup: dict[str, dict] = {}     # ticker → full quote dict (weekOHLC, prevClose)
+
+    # Existing holdings: reuse lastPrice (no network call)
+    for h in state["holdings"]:
+        if safe_num(h.get("lastPrice"), 0) > 0:
+            price_lookup[h["ticker"]] = h["lastPrice"]
+
+    # Tickers entering the portfolio that we don't have a price for yet
+    new_tickers_to_fetch = [p["ticker"] for p in picks if p["ticker"] not in price_lookup]
+    fetch_failures: list[str] = []
+
+    if new_tickers_to_fetch:
+        progress = st.progress(
+            0.0,
+            text=f"Fetching prices for {len(new_tickers_to_fetch)} new ticker(s)…",
+        )
+        for i, ticker in enumerate(new_tickers_to_fetch):
+            progress.progress(
+                (i + 1) / len(new_tickers_to_fetch),
+                text=f"Fetching {ticker}  ·  {i+1}/{len(new_tickers_to_fetch)}",
+            )
+            data = market.fetch_single_quote(ticker)
+            if data and safe_num(data.get("price"), 0) > 0:
+                price_lookup[ticker] = data["price"]
+                quote_lookup[ticker] = data
+            else:
+                fetch_failures.append(ticker)
+        progress.empty()
+
+    # ─── Liquidate ─────────────────────────────────────────────────────
     proceeds = safe_num(state.get("cashUSD"), 0)
     for h in state["holdings"]:
         val = safe_num(h.get("currentValueUSD"), safe_num(h.get("initialUSD"), 0))
         if val > 0:
             proceeds += val
+            sell_price = price_lookup.get(h["ticker"])  # may be None if never fetched
+            sell_shares = safe_num(h.get("shares"))
             state["tradeLog"].insert(0, {
                 "timestamp": ts, "action": "SELL", "ticker": h["ticker"],
-                "tradeUSD": val, "shares": safe_num(h.get("shares")),
+                "tradeUSD": val,
+                "shares": sell_shares if sell_shares > 0 else None,
+                "price": sell_price,
                 "reason": "Rebalance — full liquidation",
             })
             state["cashLog"].insert(0, {
@@ -114,33 +159,52 @@ def _do_rebalance(state: dict, df: pd.DataFrame, thesis: str) -> None:
                 "balance": proceeds, "note": f"Rebalance liquidation: {h['ticker']}",
             })
 
-    # Save thesis + basket
+    # ─── Save thesis + basket ──────────────────────────────────────────
     state["aiThesis"] = thesis.strip() or None
     state["aiBasket"] = [{"ticker": p["ticker"], "name": p["name"],
                             "targetWeight": p["targetWeight"], "why": p["why"]}
                            for p in picks]
 
-    # Build new holdings, reinvest full NAV
+    # ─── Build new holdings (pre-marked when we have prices) ───────────
     state["cashUSD"] = 0.0
-    state["holdings"] = [
-        {
-            "ticker": p["ticker"], "name": p["name"], "targetWeight": p["targetWeight"],
+    state["holdings"] = []
+    for p in picks:
+        target_usd = round(nav * p["targetWeight"], 2)
+        price = price_lookup.get(p["ticker"])
+        quote = quote_lookup.get(p["ticker"])
+        old_h = old_by_ticker.get(p["ticker"])
+
+        # Carry forward weekOHLC + lastClose if we don't have fresh data
+        last_close = (quote.get("prevClose") if quote
+                      else (old_h.get("lastClose") if old_h else None))
+        week_ohlc = (quote.get("weekOHLC") if quote
+                     else (old_h.get("weekOHLC") if old_h else None))
+
+        state["holdings"].append({
+            "ticker": p["ticker"], "name": p["name"],
+            "targetWeight": p["targetWeight"],
             "maxWeightPct": safe_num(state["settings"].get("maxWeightPct"), 20),
-            "initialUSD": round(nav * p["targetWeight"], 2),
-            "shares": None,
-            "lastPrice": None, "lastClose": None,
-            "currentValueUSD": round(nav * p["targetWeight"], 2),
-            "weekOHLC": None, "lastFetchAt": None,
-            "status": "Rebalanced — awaiting quote fetch",
+            "initialUSD": target_usd,
+            "shares": round(target_usd / price, 6) if price else None,
+            "lastPrice": price,
+            "lastClose": last_close,
+            "currentValueUSD": target_usd,
+            "weekOHLC": week_ohlc,
+            "lastFetchAt": now_iso() if price else None,
+            "status": "Rebalanced" if price else "Rebalanced — awaiting quote fetch",
             "why": p["why"], "lastTradeAt": ts,
-        }
-        for p in picks
-    ]
+        })
+
+    # ─── BUY trades for the new allocation ─────────────────────────────
     for p in picks:
         amt = round(nav * p["targetWeight"], 2)
+        price = price_lookup.get(p["ticker"])
         state["tradeLog"].insert(0, {
             "timestamp": ts, "action": "BUY", "ticker": p["ticker"],
-            "tradeUSD": amt, "shares": "-", "reason": "Rebalance — new allocation",
+            "tradeUSD": amt,
+            "shares": round(amt / price, 6) if price else None,
+            "price": price,
+            "reason": "Rebalance — new allocation",
         })
         state["cashLog"].insert(0, {
             "timestamp": ts, "type": "BUY", "amount": -amt, "balance": 0,
@@ -157,11 +221,17 @@ def _do_rebalance(state: dict, df: pd.DataFrame, thesis: str) -> None:
     })
 
     commit()
-    # Reset the builder cache so it reflects the new basket
     if "builder_rows" in st.session_state:
         del st.session_state.builder_rows
-    st.success(f"✓ Rebalanced {len(picks)} positions at NAV {to_usd(nav)}. "
-               "Fetch quotes (Trade tab) to mark to market.")
+
+    # ─── Status message ────────────────────────────────────────────────
+    fetched = len(new_tickers_to_fetch) - len(fetch_failures)
+    msg = f"✓ Rebalanced {len(picks)} positions at NAV {to_usd(nav)}."
+    if fetched > 0:
+        msg += f"  Fresh quotes captured for {fetched} new ticker(s)."
+    if fetch_failures:
+        msg += f"  ⚠ Quote fetch failed for: {', '.join(fetch_failures)} — fetch quotes manually on the Trade tab."
+    st.success(msg)
     st.rerun()
 
 

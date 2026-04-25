@@ -86,53 +86,225 @@ def _render_nav_chart(state: dict) -> None:
 
 
 # ────────────────────────────────────────────────────────────────────
-# COMPONENT PRICE CHART (% from base)
+# COMPONENT PRICE CHART (single ticker via selector, with trade markers)
 # ────────────────────────────────────────────────────────────────────
+
+def _get_ticker_basis(state: dict, ticker: str) -> tuple:
+    """Find cost-basis date and price for a ticker.
+
+    Lookup priority:
+      1. First BUY trade with explicit price → use that
+      2. First BUY trade without price → first snapshot at/after trade date
+      3. No BUY trade (initial-basket position) → portfolio init date + first snapshot
+      4. Last resort → first observed snapshot
+
+    Returns (date_str, price) or (None, None) if no usable data.
+    """
+    snaps = state.get("priceSnap", [])
+    trade_log = state.get("tradeLog", [])
+    init_date = state["valuation"][0]["date"] if state.get("valuation") else None
+
+    buys = sorted(
+        [t for t in trade_log if t.get("ticker") == ticker and t.get("action") == "BUY"],
+        key=lambda t: t.get("timestamp", ""),
+    )
+
+    if buys:
+        first_buy_date = buys[0]["timestamp"][:10]
+        price = safe_num(buys[0].get("price"), 0)
+        if price <= 0:
+            for s in snaps:
+                if s["date"] >= first_buy_date and ticker in s.get("prices", {}):
+                    price = s["prices"][ticker]; break
+        if price > 0:
+            return first_buy_date, price
+
+    if init_date:
+        for s in snaps:
+            if ticker in s.get("prices", {}) and s["date"] >= init_date:
+                return init_date, s["prices"][ticker]
+
+    for s in snaps:
+        if ticker in s.get("prices", {}):
+            return s["date"], s["prices"][ticker]
+
+    return None, None
+
+
+def _trade_marker_pct(state: dict, ticker: str, trade: dict,
+                       entry_price: float) -> tuple:
+    """Return (pct_change_from_entry, price_at_trade) for one trade marker.
+
+    Prefers the trade's recorded price; falls back to nearest snapshot.
+    Returns (None, None) if no usable price available.
+    """
+    price = safe_num(trade.get("price"), 0)
+    if price <= 0:
+        trade_date = trade["timestamp"][:10]
+        for s in state.get("priceSnap", []):
+            if s["date"] >= trade_date and ticker in s.get("prices", {}):
+                price = s["prices"][ticker]; break
+    if price > 0 and entry_price > 0:
+        return ((price - entry_price) / entry_price) * 100, price
+    return None, None
+
 
 def _render_component_chart(state: dict) -> None:
     snaps = state.get("priceSnap", [])
-    with st.container(border=True):
-        st.markdown("### Component prices · % from base")
-        st.caption("Each line = a holding's price change vs its first observed snapshot. "
-                   "Snapshots accumulate each time you fetch quotes.")
+    trade_log = state.get("tradeLog", [])
 
-        if len(snaps) < 2:
-            st.info("Need at least 2 snapshots — fetch quotes again.")
+    # Tickers ever held (current holdings ∪ tickers in trade log, including closed positions)
+    holdings_tickers = {h["ticker"] for h in state.get("holdings", [])}
+    historical_tickers = {t["ticker"] for t in trade_log
+                           if t.get("ticker") and t["ticker"] != "ALL"}
+    all_tickers = sorted(holdings_tickers | historical_tickers)
+
+    with st.container(border=True):
+        c1, c2 = st.columns([2, 2])
+        with c1:
+            st.markdown("### Component price · % from cost basis")
+
+        if not all_tickers:
+            st.info("No positions yet — add one to see its price track.")
             return
 
-        # Find all tickers + base prices
-        all_tickers = sorted({t for s in snaps for t in s.get("prices", {}).keys()})
-        base_prices = {}
-        for t in all_tickers:
-            for s in snaps:
-                if t in s.get("prices", {}):
-                    base_prices[t] = s["prices"][t]; break
-        if not base_prices:
-            st.info("No usable price data yet."); return
+        with c2:
+            # Default selection: first current holding, else first ticker overall
+            default_idx = 0
+            if state.get("holdings"):
+                first_held = state["holdings"][0]["ticker"]
+                if first_held in all_tickers:
+                    default_idx = all_tickers.index(first_held)
+            ticker = st.selectbox("Ticker", all_tickers,
+                                    index=default_idx,
+                                    key="component_chart_ticker",
+                                    label_visibility="collapsed")
+
+        if len(snaps) < 2:
+            st.info("Need at least 2 price snapshots — fetch quotes a couple of times to start the chart.")
+            return
+
+        # Cost basis
+        entry_date, entry_price = _get_ticker_basis(state, ticker)
+        if not entry_date or not entry_price:
+            st.info(f"No cost basis available for {ticker} — fetch quotes after adding it.")
+            return
+
+        # Build the price line: snapshots from entry forward
+        xs, ys = [], []
+        for s in snaps:
+            if s["date"] >= entry_date and ticker in s.get("prices", {}):
+                xs.append(s["date"])
+                ys.append((s["prices"][ticker] - entry_price) / entry_price * 100)
+        if len(xs) < 2:
+            st.info(f"Not enough price data for {ticker} since {entry_date}. Fetch quotes again.")
+            return
+
+        # Trade markers
+        ticker_trades = sorted(
+            [t for t in trade_log if t.get("ticker") == ticker],
+            key=lambda t: t.get("timestamp", ""),
+        )
+        entry_xs, entry_ys, entry_meta = [], [], []
+        exit_xs, exit_ys, exit_meta = [], [], []
+        for t in ticker_trades:
+            action = t.get("action")
+            if action not in ("BUY", "SELL", "CLOSE"):
+                continue
+            pct, price = _trade_marker_pct(state, ticker, t, entry_price)
+            if pct is None:
+                continue
+            trade_date = t["timestamp"][:10]
+            usd = safe_num(t.get("tradeUSD"), 0)
+            if action == "BUY":
+                entry_xs.append(trade_date); entry_ys.append(pct)
+                entry_meta.append([usd, price])
+            else:
+                exit_xs.append(trade_date); exit_ys.append(pct)
+                exit_meta.append([usd, price, action])
+
+        # Portfolio init date
+        init_date = state["valuation"][0]["date"] if state.get("valuation") else None
+
+        # Position summary strip above the chart
+        cur_pct = ys[-1]
+        cur_price = entry_price * (1 + cur_pct / 100)
+        cur_class = "good" if cur_pct >= 0 else "bad"
+        st.markdown(
+            f"<div style='display:flex;gap:32px;margin:6px 0 12px 0;align-items:baseline;'>"
+            f"<div><span class='label'>Cost basis</span> "
+            f"<span class='mono' style='margin-left:8px;color:var(--text);font-weight:600;'>${entry_price:,.2f}</span> "
+            f"<span class='muted-text mono' style='font-size:11px;margin-left:6px;'>· {entry_date}</span></div>"
+            f"<div><span class='label'>Latest</span> "
+            f"<span class='mono' style='margin-left:8px;color:var(--text);font-weight:600;'>${cur_price:,.2f}</span></div>"
+            f"<div><span class='label'>Δ</span> "
+            f"<span class='mono {cur_class}' style='margin-left:8px;font-weight:600;font-size:14px;'>"
+            f"{'+' if cur_pct >= 0 else ''}{cur_pct:.2f}%</span></div>"
+            f"<div><span class='label'>Trades</span> "
+            f"<span class='mono' style='margin-left:8px;color:var(--text-2);'>"
+            f"{len(entry_xs)} buy · {len(exit_xs)} sell</span></div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Build the chart
+        line_color = "#00C896" if cur_pct >= 0 else "#FF4757"
+        rgb = "0,200,150" if cur_pct >= 0 else "255,71,87"
 
         fig = go.Figure()
-        # Bloomberg-modern palette: amber + cyan as anchors, then varied hues
-        palette = ["#FFB800", "#00B8D4", "#00C896", "#FF4757", "#A78BFA",
-                   "#F472B6", "#34D399", "#60A5FA", "#FB923C", "#E879F9"]
-        for i, t in enumerate(all_tickers):
-            xs, ys = [], []
-            base = base_prices[t]
-            for s in snaps:
-                if t in s.get("prices", {}):
-                    xs.append(s["date"])
-                    ys.append((s["prices"][t] - base) / base * 100)
-            if len(xs) < 2:
-                continue
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines", name=ticker,
+            line=dict(color=line_color, width=2, shape="spline", smoothing=0.3),
+            fill="tozeroy", fillcolor=f"rgba({rgb},0.08)",
+            hovertemplate=f"<b>{ticker}</b><br>%{{x}}<br>%{{y:+.2f}}%<extra></extra>",
+            showlegend=False,
+        ))
+
+        # Cost basis at 0%
+        fig.add_hline(
+            y=0, line=dict(color="#3a3a3a", width=1, dash="dot"),
+            annotation_text=f"Cost basis  ${entry_price:,.2f}",
+            annotation_position="bottom right",
+            annotation_font=dict(color="#888", size=10, family="Menlo, Consolas, monospace"),
+        )
+
+        # Portfolio init vertical marker
+        if init_date and xs[0] <= init_date <= xs[-1]:
+            init_label = "Portfolio init" if init_date != entry_date else "Init / entry"
+            fig.add_vline(
+                x=init_date, line=dict(color="#FFB800", width=1, dash="dash"),
+                annotation_text=init_label, annotation_position="top right",
+                annotation_font=dict(color="#FFB800", size=10, family="Menlo, Consolas, monospace"),
+            )
+
+        # Entry markers
+        if entry_xs:
             fig.add_trace(go.Scatter(
-                x=xs, y=ys, mode="lines", name=t,
-                line=dict(color=palette[i % len(palette)], width=1.5,
-                           shape="spline", smoothing=0.3),
-                hovertemplate=f"<b>{t}</b><br>%{{x}}<br>%{{y:+.2f}}%<extra></extra>",
+                x=entry_xs, y=entry_ys, customdata=entry_meta,
+                mode="markers", name="Buy",
+                marker=dict(symbol="triangle-up", size=14, color="#00C896",
+                              line=dict(color="#0a0a0a", width=1.5)),
+                hovertemplate=("<b>BUY</b>  $%{customdata[0]:,.2f}<br>"
+                               "%{x}<br>"
+                               "Px $%{customdata[1]:,.2f}<br>"
+                               "%{y:+.2f}% from cost<extra></extra>"),
             ))
 
-        fig.add_hline(y=0, line=dict(color="#3a3a3a", width=1, dash="dot"))
+        # Exit markers
+        if exit_xs:
+            fig.add_trace(go.Scatter(
+                x=exit_xs, y=exit_ys, customdata=exit_meta,
+                mode="markers", name="Sell",
+                marker=dict(symbol="triangle-down", size=14, color="#FF4757",
+                              line=dict(color="#0a0a0a", width=1.5)),
+                hovertemplate=("<b>%{customdata[2]}</b>  $%{customdata[0]:,.2f}<br>"
+                               "%{x}<br>"
+                               "Px $%{customdata[1]:,.2f}<br>"
+                               "%{y:+.2f}% from cost<extra></extra>"),
+            ))
+
         fig.update_layout(
-            height=380, margin=dict(l=10, r=10, t=20, b=20),
+            height=380, margin=dict(l=10, r=10, t=30, b=20),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             xaxis=dict(
                 gridcolor="#1a1a1a",
@@ -146,10 +318,12 @@ def _render_component_chart(state: dict) -> None:
                 showline=False, zeroline=False,
             ),
             legend=dict(
-                orientation="h", yanchor="top", y=-0.12,
+                orientation="h", yanchor="top", y=1.10,
+                xanchor="right", x=1,
                 font=dict(color="#b8b8b8", size=10, family="Menlo, Consolas, monospace"),
+                bgcolor="rgba(0,0,0,0)",
             ),
-            hovermode="x unified",
+            hovermode="closest",
             hoverlabel=dict(
                 bgcolor="#161616", bordercolor="#FFB800",
                 font=dict(family="Menlo, Consolas, monospace", size=11, color="#f5f5f5"),
