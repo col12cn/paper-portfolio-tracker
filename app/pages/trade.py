@@ -83,14 +83,62 @@ def _drill_down(state: dict, ticker: str) -> None:
     else:
         st.caption("No trades for this ticker yet.")
 
-    # Ask Gemini about this ticker
-    if st.button(f"✦ Ask Gemini about {ticker}", key=f"ask_about_{ticker}"):
-        st.session_state.preset_question = (
-            f"Detailed view on {ticker}: current setup, key catalysts in the next 90 days, "
-            f"main risks, and whether to add/trim/hold given my full portfolio."
+    # ─── Ask Gemini about this ticker (inline within the dialog) ───
+    st.markdown("---")
+    st.markdown(f"**✦ Ask Gemini about {ticker}**")
+
+    default_q = (f"Detailed view on {ticker}: current setup, key catalysts in the next "
+                 f"90 days, main risks, and whether to add / trim / hold given my full portfolio.")
+
+    # Initialise the question once per dialog open; don't fight value-vs-key warnings
+    q_key = f"q_{ticker}"
+    st.session_state.setdefault(q_key, default_q)
+
+    question = st.text_area(
+        "Edit the question if you like, then Ask",
+        key=q_key,
+        height=90,
+        label_visibility="collapsed",
+    )
+
+    c_ask, c_clear = st.columns([1, 1])
+    with c_ask:
+        ask_clicked = st.button("Ask Gemini", key=f"ask_btn_{ticker}",
+                                  type="primary", use_container_width=True)
+    with c_clear:
+        if st.button("Reset question", key=f"reset_q_{ticker}",
+                      use_container_width=True):
+            st.session_state[q_key] = default_q
+            st.session_state.pop(f"answer_{ticker}", None)
+            st.rerun()
+
+    if ask_clicked and question.strip():
+        with st.spinner(f"Asking Gemini about {ticker}…"):
+            try:
+                from app import ai as ai_mod
+                answer = ai_mod.ask_gemini(state, question.strip())
+                st.session_state[f"answer_{ticker}"] = answer
+                # Mirror to global ask history so it shows up on the Overview tab too
+                state.setdefault("askHistory", []).insert(0, {
+                    "timestamp": now_iso(),
+                    "question": question.strip(),
+                    "answer": answer,
+                })
+                state["askHistory"] = state["askHistory"][:10]
+                commit()
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    # Show the cached answer if we have one
+    answer = st.session_state.get(f"answer_{ticker}")
+    if answer:
+        st.markdown(
+            f"<div style='background:#0f1732;border:1px solid #2d3a6b;"
+            f"border-left:3px solid #7aa2ff;border-radius:10px;padding:14px;"
+            f"white-space:pre-wrap;line-height:1.6;font-size:13px;margin-top:8px;'>"
+            f"{answer}</div>",
+            unsafe_allow_html=True,
         )
-        st.session_state.go_to_overview = True
-        st.rerun()
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -505,8 +553,3 @@ def render() -> None:
 
     _render_add_new_position(state)
     _render_cash(state)
-
-    # Set page-jump flag if requested by drill-down
-    if st.session_state.get("go_to_overview"):
-        st.session_state.go_to_overview = False
-        st.session_state.active_tab = "Overview"
