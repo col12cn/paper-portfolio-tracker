@@ -39,7 +39,11 @@ def _gemini_endpoint(model: str, key: str) -> str:
 
 def _call_gemini(prompt: str, with_search: bool = False,
                   temperature: float = 0.4, max_tokens: int = 2048) -> str:
-    """Low-level Gemini call. Raises on error, returns text on success."""
+    """Low-level Gemini call. Raises on error, returns text on success.
+
+    If the response hits max_tokens, the partial text is returned with a
+    visible truncation banner appended — caller does not need to handle this.
+    """
     key = _get_gemini_key()
     if not key:
         raise RuntimeError("GEMINI_API_KEY not set in secrets")
@@ -57,10 +61,23 @@ def _call_gemini(prompt: str, with_search: bool = False,
         raise RuntimeError(f"Gemini {r.status_code}: {r.text[:200]}")
 
     data = r.json()
-    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    candidate = (data.get("candidates") or [{}])[0]
+    parts = candidate.get("content", {}).get("parts", [])
     text = "".join(p.get("text", "") for p in parts).strip()
+    finish_reason = candidate.get("finishReason", "")
+
     if not text:
-        raise RuntimeError("Empty response from Gemini")
+        raise RuntimeError(
+            f"Empty response from Gemini (finishReason={finish_reason or 'unknown'})"
+        )
+
+    # Surface truncation rather than silently returning a partial response
+    if finish_reason == "MAX_TOKENS":
+        text += (
+            f"\n\n⚠ Response truncated at the {max_tokens}-token limit. "
+            f"Re-run for a fresh attempt, or ask a more focused follow-up question."
+        )
+
     return text
 
 
@@ -199,7 +216,7 @@ USER QUESTION:
 
 Answer directly and specifically. Reference actual position tickers from the portfolio above. Use 200-400 words. No generic disclaimers."""
 
-    return _call_gemini(prompt, with_search=True, temperature=0.4, max_tokens=2048)
+    return _call_gemini(prompt, with_search=True, temperature=0.4, max_tokens=4096)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -237,7 +254,7 @@ RECOMMENDATIONS:
 
 Be direct and specific. No generic disclaimers."""
 
-    return _call_gemini(prompt, with_search=True, temperature=0.3, max_tokens=2048)
+    return _call_gemini(prompt, with_search=True, temperature=0.3, max_tokens=6144)
 
 
 # ────────────────────────────────────────────────────────────────────
