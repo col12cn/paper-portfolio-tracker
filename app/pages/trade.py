@@ -133,10 +133,7 @@ def _drill_down(state: dict, ticker: str) -> None:
     answer = st.session_state.get(f"answer_{ticker}")
     if answer:
         st.markdown(
-            f"<div style='background:#0f1732;border:1px solid #2d3a6b;"
-            f"border-left:3px solid #7aa2ff;border-radius:10px;padding:14px;"
-            f"white-space:pre-wrap;line-height:1.6;font-size:13px;margin-top:8px;'>"
-            f"{answer}</div>",
+            f"<div class='insight' style='margin-top:8px;'>{answer}</div>",
             unsafe_allow_html=True,
         )
 

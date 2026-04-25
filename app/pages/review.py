@@ -24,7 +24,8 @@ def _render_nav_chart(state: dict) -> None:
         with c2:
             if val_history:
                 st.markdown(
-                    f"<div style='text-align:right;color:#a8b4d8;font-size:12px;'>"
+                    f"<div style='text-align:right;color:var(--muted);"
+                    f"font-family:var(--font-mono);font-size:11px;letter-spacing:0.04em;'>"
                     f"{val_history[0]['date']} → {val_history[-1]['date']}</div>",
                     unsafe_allow_html=True,
                 )
@@ -36,27 +37,50 @@ def _render_nav_chart(state: dict) -> None:
         xs = [v["date"] for v in val_history]
         ys = [v["portfolioValueUSD"] for v in val_history]
         start_cap = safe_num(state["settings"].get("startingCapital"), 1000)
-        colour = "#27c281" if ys[-1] >= start_cap else "#ff6b6b"
-        rgb = "39,194,129" if ys[-1] >= start_cap else "255,107,107"
+
+        # Y-range that focuses on actual variation (not 0-to-NAV)
+        all_vals = ys + [start_cap]
+        y_min, y_max = min(all_vals), max(all_vals)
+        spread = max(y_max - y_min, y_max * 0.02)
+        y_range = [y_min - spread * 0.20, y_max + spread * 0.20]
+
+        colour = "#00C896" if ys[-1] >= start_cap else "#FF4757"
+        rgb = "0,200,150" if ys[-1] >= start_cap else "255,71,87"
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=xs, y=ys, mode="lines",
-            line=dict(color=colour, width=2.5),
-            fill="tozeroy", fillcolor=f"rgba({rgb},0.18)",
+            line=dict(color=colour, width=2.5, shape="spline", smoothing=0.4),
+            fill="tozeroy", fillcolor=f"rgba({rgb},0.12)",
             hovertemplate="<b>%{x}</b><br>NAV: $%{y:,.2f}<extra></extra>",
             name="NAV",
         ))
-        fig.add_hline(y=start_cap, line=dict(color="#7385b8", width=1, dash="dash"),
-                       annotation_text=f"Start: {to_usd(start_cap)}",
-                       annotation_position="top right")
+        fig.add_hline(
+            y=start_cap, line=dict(color="#3a3a3a", width=1, dash="dash"),
+            annotation_text=f"Start  {to_usd(start_cap)}",
+            annotation_position="top right",
+            annotation_font=dict(color="#888", size=10, family="JetBrains Mono"),
+        )
         fig.update_layout(
             height=320, margin=dict(l=10, r=10, t=20, b=20),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0f1732",
-            xaxis=dict(gridcolor="#1e2d54", tickfont=dict(color="#a8b4d8")),
-            yaxis=dict(gridcolor="#1e2d54", tickfont=dict(color="#a8b4d8"),
-                        tickformat="$,.0f"),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(
+                gridcolor="#1a1a1a",
+                tickfont=dict(color="#888", family="JetBrains Mono", size=10),
+                showline=False, zeroline=False,
+            ),
+            yaxis=dict(
+                range=y_range,
+                gridcolor="#1a1a1a",
+                tickfont=dict(color="#888", family="JetBrains Mono", size=10),
+                tickformat="$,.0f",
+                showline=False, zeroline=False,
+            ),
             showlegend=False, hovermode="x",
+            hoverlabel=dict(
+                bgcolor="#161616", bordercolor="#FFB800",
+                font=dict(family="JetBrains Mono", size=11, color="#f5f5f5"),
+            ),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -87,8 +111,9 @@ def _render_component_chart(state: dict) -> None:
             st.info("No usable price data yet."); return
 
         fig = go.Figure()
-        palette = ["#7aa2ff", "#27c281", "#f3b74f", "#ff6b6b", "#c587ff",
-                   "#5dd4d4", "#ff9966", "#9af36b", "#ff7faa", "#88e0ff"]
+        # Bloomberg-modern palette: amber + cyan as anchors, then varied hues
+        palette = ["#FFB800", "#00B8D4", "#00C896", "#FF4757", "#A78BFA",
+                   "#F472B6", "#34D399", "#60A5FA", "#FB923C", "#E879F9"]
         for i, t in enumerate(all_tickers):
             xs, ys = [], []
             base = base_prices[t]
@@ -100,20 +125,35 @@ def _render_component_chart(state: dict) -> None:
                 continue
             fig.add_trace(go.Scatter(
                 x=xs, y=ys, mode="lines", name=t,
-                line=dict(color=palette[i % len(palette)], width=1.6),
+                line=dict(color=palette[i % len(palette)], width=1.5,
+                           shape="spline", smoothing=0.3),
                 hovertemplate=f"<b>{t}</b><br>%{{x}}<br>%{{y:+.2f}}%<extra></extra>",
             ))
 
-        fig.add_hline(y=0, line=dict(color="#7385b8", width=1, dash="dot"))
+        fig.add_hline(y=0, line=dict(color="#3a3a3a", width=1, dash="dot"))
         fig.update_layout(
             height=380, margin=dict(l=10, r=10, t=20, b=20),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#0f1732",
-            xaxis=dict(gridcolor="#1e2d54", tickfont=dict(color="#a8b4d8")),
-            yaxis=dict(gridcolor="#1e2d54", tickfont=dict(color="#a8b4d8"),
-                        ticksuffix="%"),
-            legend=dict(orientation="h", yanchor="top", y=-0.12,
-                          font=dict(color="#a8b4d8", size=11)),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(
+                gridcolor="#1a1a1a",
+                tickfont=dict(color="#888", family="JetBrains Mono", size=10),
+                showline=False, zeroline=False,
+            ),
+            yaxis=dict(
+                gridcolor="#1a1a1a",
+                tickfont=dict(color="#888", family="JetBrains Mono", size=10),
+                ticksuffix="%",
+                showline=False, zeroline=False,
+            ),
+            legend=dict(
+                orientation="h", yanchor="top", y=-0.12,
+                font=dict(color="#b8b8b8", size=10, family="JetBrains Mono"),
+            ),
             hovermode="x unified",
+            hoverlabel=dict(
+                bgcolor="#161616", bordercolor="#FFB800",
+                font=dict(family="JetBrains Mono", size=11, color="#f5f5f5"),
+            ),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -147,8 +187,7 @@ def _render_risk_analysis(state: dict) -> None:
 
         if "last_risk_analysis" in st.session_state:
             st.markdown(
-                f"<div style='background:#0f1732;border:1px solid #2d3a6b;border-left:3px solid #f3b74f;"
-                f"border-radius:10px;padding:14px;white-space:pre-wrap;line-height:1.7;font-size:14px;'>"
+                f"<div class='insight insight-warn' style='margin-top:8px;'>"
                 f"{st.session_state.last_risk_analysis}</div>",
                 unsafe_allow_html=True,
             )

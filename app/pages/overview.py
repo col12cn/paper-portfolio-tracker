@@ -45,36 +45,46 @@ def _render_sparkline(state: dict) -> None:
     cols = st.columns([1, 4, 1])
     with cols[0]:
         st.markdown(
-            f"<div style='font-size:11px;color:#a8b4d8;letter-spacing:0.05em;text-transform:uppercase;'>Portfolio NAV</div>"
-            f"<div style='font-size:26px;font-weight:700;'>{to_usd(nav)}</div>",
+            f"<div class='label'>Portfolio NAV</div>"
+            f"<div class='value'>{to_usd(nav)}</div>",
             unsafe_allow_html=True,
         )
 
     with cols[1]:
         if len(val_history) < 2:
             st.markdown(
-                "<div style='color:#7385b8;font-style:italic;font-size:12px;text-align:center;padding:18px;'>"
-                "Fetch quotes a few times to start the chart</div>",
+                "<div style='color:var(--muted);font-style:italic;font-size:11px;"
+                "text-align:center;padding:24px;font-family:var(--font-mono);'>"
+                "Awaiting data — fetch quotes to start tracking</div>",
                 unsafe_allow_html=True,
             )
         else:
             xs = [v["date"] for v in val_history]
             ys = [v["portfolioValueUSD"] for v in val_history]
-            colour = "#27c281" if ys[-1] >= start_cap else "#ff6b6b"
+
+            # Y-range that focuses on actual variation, not 0-to-NAV
+            all_vals = ys + [start_cap]
+            y_min, y_max = min(all_vals), max(all_vals)
+            spread = max(y_max - y_min, y_max * 0.02)
+            y_range = [y_min - spread * 0.30, y_max + spread * 0.20]
+
+            colour = "#00C896" if ys[-1] >= start_cap else "#FF4757"
+            rgb = "0,200,150" if ys[-1] >= start_cap else "255,71,87"
 
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=xs, y=ys, mode="lines",
-                line=dict(color=colour, width=2),
+                line=dict(color=colour, width=2, shape="spline", smoothing=0.4),
                 fill="tozeroy",
-                fillcolor=f"rgba({'39,194,129' if ys[-1] >= start_cap else '255,107,107'},0.15)",
+                fillcolor=f"rgba({rgb},0.15)",
                 hovertemplate="%{x}<br>$%{y:,.2f}<extra></extra>",
             ))
-            fig.add_hline(y=start_cap, line=dict(color="#40528b", width=1, dash="dash"))
+            fig.add_hline(y=start_cap, line=dict(color="#3a3a3a", width=1, dash="dash"))
             fig.update_layout(
                 height=80, margin=dict(l=0, r=0, t=4, b=4),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                xaxis=dict(visible=False), yaxis=dict(visible=False),
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False, range=y_range),
                 showlegend=False,
             )
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -82,9 +92,10 @@ def _render_sparkline(state: dict) -> None:
     with cols[2]:
         cls = "good" if pnl_pct >= 0 else "bad"
         st.markdown(
-            f"<div style='text-align:right;font-weight:700;font-size:16px;' class='{cls}'>"
+            f"<div style='text-align:right;font-family:var(--font-mono);"
+            f"font-weight:600;font-size:18px;letter-spacing:-0.01em;' class='{cls}'>"
             f"{signed_pct(pnl_pct)}</div>"
-            f"<div style='text-align:right;font-size:10px;color:#7385b8;'>since inception</div>",
+            f"<div class='label' style='text-align:right;margin-top:2px;'>Since inception</div>",
             unsafe_allow_html=True,
         )
 
@@ -154,26 +165,28 @@ def _render_ask_gemini(state: dict) -> None:
         history = state.get("askHistory", [])
         if not history:
             st.markdown(
-                "<div style='color:#a8b4d8;font-style:italic;font-size:13px;padding:8px;'>"
-                "No questions asked yet.</div>",
+                "<div style='color:var(--muted);font-style:italic;font-size:12px;"
+                "padding:8px;font-family:var(--font-mono);'>"
+                "Awaiting first question</div>",
                 unsafe_allow_html=True,
             )
         else:
             latest = history[0]
             st.markdown(
-                f"<div style='background:#0f1732;border:1px solid #2d3a6b;border-left:3px solid #7aa2ff;border-radius:10px;padding:14px;'>"
-                f"<div style='font-size:12px;color:#a8b4d8;margin-bottom:8px;'>"
-                f"<strong style='color:#7aa2ff;'>Q:</strong> {latest['question']}"
-                f"<span style='margin-left:8px;color:#7385b8;'>{fmt_rel_time(latest.get('timestamp'))}</span></div>"
-                f"<div style='white-space:pre-wrap;line-height:1.6;'>{latest['answer']}</div>"
+                f"<div class='insight'>"
+                f"<div class='insight-meta'><strong>Q</strong>{latest['question']}"
+                f"<span style='margin-left:10px;color:var(--muted-2);'>"
+                f"{fmt_rel_time(latest.get('timestamp'))}</span></div>"
+                f"<div>{latest['answer']}</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
             if len(history) > 1:
-                with st.expander(f"Earlier questions ({len(history)-1})"):
+                with st.expander(f"Earlier questions · {len(history)-1}"):
                     for h in history[1:]:
                         st.markdown(f"**Q:** {h['question']}")
-                        st.markdown(f"<div style='font-size:13px;color:#a8b4d8;'>{h['answer']}</div>",
+                        st.markdown(f"<div style='font-size:13px;color:var(--text-2);"
+                                    f"line-height:1.6;'>{h['answer']}</div>",
                                     unsafe_allow_html=True)
                         st.markdown("---")
 
@@ -191,8 +204,7 @@ def _render_active_basket(state: dict) -> None:
 
         if state.get("aiThesis"):
             st.markdown(
-                f"<div style='background:#192349;border:1px solid #2d3a6b;border-left:3px solid #7aa2ff;"
-                f"border-radius:10px;padding:14px;margin-bottom:14px;white-space:pre-wrap;line-height:1.7;'>"
+                f"<div class='insight insight-cool' style='margin-bottom:14px;'>"
                 f"{state['aiThesis']}</div>",
                 unsafe_allow_html=True,
             )
@@ -203,12 +215,12 @@ def _render_active_basket(state: dict) -> None:
         ]
         for h in basket:
             st.markdown(
-                f"<div style='border-top:1px solid #2d3a6b;padding:10px 0;'>"
-                f"<div style='display:flex;justify-content:space-between;align-items:baseline;'>"
-                f"<strong>{h['ticker']}</strong>"
-                f"<span class='pill'>Target {safe_num(h.get('targetWeight'))*100:.1f}%</span></div>"
-                f"<div style='color:#a8b4d8;font-size:13px;margin-top:2px;'>{h['name']}</div>"
-                f"<div style='color:#a8b4d8;font-size:12px;margin-top:6px;'>{h.get('why', '')}</div>"
+                f"<div class='position-row'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+                f"<span class='position-ticker'>{h['ticker']}</span>"
+                f"<span class='pill pill-accent'>Tgt {safe_num(h.get('targetWeight'))*100:.1f}%</span></div>"
+                f"<div class='position-name'>{h['name']}</div>"
+                f"<div class='position-why'>{h.get('why', '')}</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
