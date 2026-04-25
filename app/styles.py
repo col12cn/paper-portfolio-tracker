@@ -13,8 +13,6 @@ Type hierarchy via weight + size, not visual containers.
 
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
 :root {
   /* Surfaces */
   --bg:           #0a0a0a;
@@ -46,9 +44,11 @@ CSS = """
   --warn:         #FFA726;
   --warn-soft:    rgba(255, 167, 38, 0.10);
 
-  /* Type */
-  --font-sans:    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono:    'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  /* Type — system fonts only, no network dependency
+     Sans: SF on Mac → Segoe on Windows → Roboto on Android → fallback
+     Mono: Menlo on Mac → Consolas on Windows → DejaVu/Liberation on Linux */
+  --font-sans:    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:    Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', 'Bitstream Vera Sans Mono', monospace;
 }
 
 /* ───────────────────────────── App-level ──────────────────────────────── */

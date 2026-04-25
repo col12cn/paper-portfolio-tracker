@@ -59,27 +59,27 @@ def _render_nav_chart(state: dict) -> None:
             y=start_cap, line=dict(color="#3a3a3a", width=1, dash="dash"),
             annotation_text=f"Start  {to_usd(start_cap)}",
             annotation_position="top right",
-            annotation_font=dict(color="#888", size=10, family="JetBrains Mono"),
+            annotation_font=dict(color="#888", size=10, family="Menlo, Consolas, monospace"),
         )
         fig.update_layout(
             height=320, margin=dict(l=10, r=10, t=20, b=20),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             xaxis=dict(
                 gridcolor="#1a1a1a",
-                tickfont=dict(color="#888", family="JetBrains Mono", size=10),
+                tickfont=dict(color="#888", family="Menlo, Consolas, monospace", size=10),
                 showline=False, zeroline=False,
             ),
             yaxis=dict(
                 range=y_range,
                 gridcolor="#1a1a1a",
-                tickfont=dict(color="#888", family="JetBrains Mono", size=10),
+                tickfont=dict(color="#888", family="Menlo, Consolas, monospace", size=10),
                 tickformat="$,.0f",
                 showline=False, zeroline=False,
             ),
             showlegend=False, hovermode="x",
             hoverlabel=dict(
                 bgcolor="#161616", bordercolor="#FFB800",
-                font=dict(family="JetBrains Mono", size=11, color="#f5f5f5"),
+                font=dict(family="Menlo, Consolas, monospace", size=11, color="#f5f5f5"),
             ),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -136,23 +136,23 @@ def _render_component_chart(state: dict) -> None:
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             xaxis=dict(
                 gridcolor="#1a1a1a",
-                tickfont=dict(color="#888", family="JetBrains Mono", size=10),
+                tickfont=dict(color="#888", family="Menlo, Consolas, monospace", size=10),
                 showline=False, zeroline=False,
             ),
             yaxis=dict(
                 gridcolor="#1a1a1a",
-                tickfont=dict(color="#888", family="JetBrains Mono", size=10),
+                tickfont=dict(color="#888", family="Menlo, Consolas, monospace", size=10),
                 ticksuffix="%",
                 showline=False, zeroline=False,
             ),
             legend=dict(
                 orientation="h", yanchor="top", y=-0.12,
-                font=dict(color="#b8b8b8", size=10, family="JetBrains Mono"),
+                font=dict(color="#b8b8b8", size=10, family="Menlo, Consolas, monospace"),
             ),
             hovermode="x unified",
             hoverlabel=dict(
                 bgcolor="#161616", bordercolor="#FFB800",
-                font=dict(family="JetBrains Mono", size=11, color="#f5f5f5"),
+                font=dict(family="Menlo, Consolas, monospace", size=11, color="#f5f5f5"),
             ),
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
