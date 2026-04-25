@@ -153,14 +153,17 @@ def _render_component_chart(state: dict) -> None:
     snaps = state.get("priceSnap", [])
     trade_log = state.get("tradeLog", [])
 
-    # Tickers ever held (current holdings ∪ tickers in trade log, including closed positions)
     holdings_tickers = {h["ticker"] for h in state.get("holdings", [])}
     historical_tickers = {t["ticker"] for t in trade_log
                            if t.get("ticker") and t["ticker"] != "ALL"}
     all_tickers = sorted(holdings_tickers | historical_tickers)
 
+    # Bloomberg-modern palette for multi-ticker mode
+    PALETTE = ["#FFB800", "#00B8D4", "#A78BFA", "#34D399", "#FB923C",
+               "#F472B6", "#60A5FA", "#E879F9", "#FBBF24", "#10B981"]
+
     with st.container(border=True):
-        c1, c2 = st.columns([2, 2])
+        c1, c2 = st.columns([2, 3])
         with c1:
             st.markdown("### Component price · % from cost basis")
 
@@ -169,139 +172,221 @@ def _render_component_chart(state: dict) -> None:
             return
 
         with c2:
-            # Default selection: first current holding, else first ticker overall
-            default_idx = 0
+            default_tickers = []
             if state.get("holdings"):
                 first_held = state["holdings"][0]["ticker"]
                 if first_held in all_tickers:
-                    default_idx = all_tickers.index(first_held)
-            ticker = st.selectbox("Ticker", all_tickers,
-                                    index=default_idx,
-                                    key="component_chart_ticker",
-                                    label_visibility="collapsed")
+                    default_tickers = [first_held]
+            selected = st.multiselect(
+                "Tickers", all_tickers,
+                default=default_tickers,
+                key="component_chart_tickers",
+                label_visibility="collapsed",
+                placeholder="Select one or more tickers to compare…",
+            )
+
+        if not selected:
+            st.info("Select one or more tickers above to see their price tracks.")
+            return
 
         if len(snaps) < 2:
-            st.info("Need at least 2 price snapshots — fetch quotes a couple of times to start the chart.")
+            st.info("Need at least 2 price snapshots — fetch quotes a couple of times.")
             return
 
-        # Cost basis
-        entry_date, entry_price = _get_ticker_basis(state, ticker)
-        if not entry_date or not entry_price:
-            st.info(f"No cost basis available for {ticker} — fetch quotes after adding it.")
-            return
+        is_single = len(selected) == 1
 
-        # Build the price line: snapshots from entry forward
-        xs, ys = [], []
-        for s in snaps:
-            if s["date"] >= entry_date and ticker in s.get("prices", {}):
-                xs.append(s["date"])
-                ys.append((s["prices"][ticker] - entry_price) / entry_price * 100)
-        if len(xs) < 2:
-            st.info(f"Not enough price data for {ticker} since {entry_date}. Fetch quotes again.")
-            return
-
-        # Trade markers
-        ticker_trades = sorted(
-            [t for t in trade_log if t.get("ticker") == ticker],
-            key=lambda t: t.get("timestamp", ""),
-        )
-        entry_xs, entry_ys, entry_meta = [], [], []
-        exit_xs, exit_ys, exit_meta = [], [], []
-        for t in ticker_trades:
-            action = t.get("action")
-            if action not in ("BUY", "SELL", "CLOSE"):
+        # ─── Build per-ticker datasets ─────────────────────────────────
+        datasets = []
+        for i, ticker in enumerate(selected):
+            entry_date, entry_price = _get_ticker_basis(state, ticker)
+            if not entry_date or not entry_price:
                 continue
-            pct, price = _trade_marker_pct(state, ticker, t, entry_price)
-            if pct is None:
+
+            xs, ys = [], []
+            for s in snaps:
+                if s["date"] >= entry_date and ticker in s.get("prices", {}):
+                    xs.append(s["date"])
+                    ys.append((s["prices"][ticker] - entry_price) / entry_price * 100)
+            if len(xs) < 2:
                 continue
-            trade_date = t["timestamp"][:10]
-            usd = safe_num(t.get("tradeUSD"), 0)
-            if action == "BUY":
-                entry_xs.append(trade_date); entry_ys.append(pct)
-                entry_meta.append([usd, price])
+
+            ticker_trades = sorted(
+                [t for t in trade_log if t.get("ticker") == ticker],
+                key=lambda t: t.get("timestamp", ""),
+            )
+            entry_xs, entry_ys, entry_meta = [], [], []
+            exit_xs, exit_ys, exit_meta = [], [], []
+            for t in ticker_trades:
+                action = t.get("action")
+                if action not in ("BUY", "SELL", "CLOSE"):
+                    continue
+                pct, price = _trade_marker_pct(state, ticker, t, entry_price)
+                if pct is None:
+                    continue
+                trade_date = t["timestamp"][:10]
+                usd = safe_num(t.get("tradeUSD"), 0)
+                if action == "BUY":
+                    entry_xs.append(trade_date); entry_ys.append(pct)
+                    entry_meta.append([usd, price, ticker])
+                else:
+                    exit_xs.append(trade_date); exit_ys.append(pct)
+                    exit_meta.append([usd, price, action, ticker])
+
+            datasets.append({
+                "ticker": ticker,
+                "entry_date": entry_date,
+                "entry_price": entry_price,
+                "cur_price": entry_price * (1 + ys[-1] / 100),
+                "cur_pct": ys[-1],
+                "xs": xs, "ys": ys,
+                "entry_xs": entry_xs, "entry_ys": entry_ys, "entry_meta": entry_meta,
+                "exit_xs": exit_xs, "exit_ys": exit_ys, "exit_meta": exit_meta,
+            })
+
+        if not datasets:
+            st.info("No usable price history for the selected tickers yet.")
+            return
+
+        # Assign colours: semantic green/red for single, palette for multi
+        for i, d in enumerate(datasets):
+            if is_single:
+                d["color"] = "#00C896" if d["cur_pct"] >= 0 else "#FF4757"
+                d["rgb"] = "0,200,150" if d["cur_pct"] >= 0 else "255,71,87"
             else:
-                exit_xs.append(trade_date); exit_ys.append(pct)
-                exit_meta.append([usd, price, action])
+                d["color"] = PALETTE[i % len(PALETTE)]
+                d["rgb"] = None  # no fill in multi mode
 
-        # Portfolio init date
-        init_date = state["valuation"][0]["date"] if state.get("valuation") else None
+        # ─── Summary strip ─────────────────────────────────────────────
+        if is_single:
+            d = datasets[0]
+            cur_class = "good" if d["cur_pct"] >= 0 else "bad"
+            st.markdown(
+                f"<div style='display:flex;gap:32px;margin:6px 0 12px 0;align-items:baseline;flex-wrap:wrap;'>"
+                f"<div><span class='label'>Cost basis</span> "
+                f"<span class='mono' style='margin-left:8px;color:var(--text);font-weight:600;'>${d['entry_price']:,.2f}</span> "
+                f"<span class='muted-text mono' style='font-size:11px;margin-left:6px;'>· {d['entry_date']}</span></div>"
+                f"<div><span class='label'>Latest</span> "
+                f"<span class='mono' style='margin-left:8px;color:var(--text);font-weight:600;'>${d['cur_price']:,.2f}</span></div>"
+                f"<div><span class='label'>Δ</span> "
+                f"<span class='mono {cur_class}' style='margin-left:8px;font-weight:600;font-size:14px;'>"
+                f"{'+' if d['cur_pct'] >= 0 else ''}{d['cur_pct']:.2f}%</span></div>"
+                f"<div><span class='label'>Trades</span> "
+                f"<span class='mono' style='margin-left:8px;color:var(--text-2);'>"
+                f"{len(d['entry_xs'])} buy · {len(d['exit_xs'])} sell</span></div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            # Multi-ticker: compact colour-dotted comparison cards
+            strip = "<div style='display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 14px 0;'>"
+            for d in datasets:
+                cls = "good" if d["cur_pct"] >= 0 else "bad"
+                sign = "+" if d["cur_pct"] >= 0 else ""
+                strip += (
+                    f"<div style='display:flex;align-items:center;gap:10px;"
+                    f"padding:6px 12px;background:var(--bg-soft);"
+                    f"border:1px solid var(--line);border-radius:4px;'>"
+                    f"<span style='display:inline-block;width:10px;height:10px;"
+                    f"border-radius:50%;background:{d['color']};'></span>"
+                    f"<span class='mono' style='color:var(--text);font-weight:600;font-size:13px;'>{d['ticker']}</span>"
+                    f"<span class='mono muted-text' style='font-size:11px;'>"
+                    f"${d['entry_price']:,.2f} → ${d['cur_price']:,.2f}</span>"
+                    f"<span class='mono {cls}' style='font-weight:600;font-size:13px;'>"
+                    f"{sign}{d['cur_pct']:.2f}%</span>"
+                    f"</div>"
+                )
+            strip += "</div>"
+            st.markdown(strip, unsafe_allow_html=True)
 
-        # Position summary strip above the chart
-        cur_pct = ys[-1]
-        cur_price = entry_price * (1 + cur_pct / 100)
-        cur_class = "good" if cur_pct >= 0 else "bad"
-        st.markdown(
-            f"<div style='display:flex;gap:32px;margin:6px 0 12px 0;align-items:baseline;'>"
-            f"<div><span class='label'>Cost basis</span> "
-            f"<span class='mono' style='margin-left:8px;color:var(--text);font-weight:600;'>${entry_price:,.2f}</span> "
-            f"<span class='muted-text mono' style='font-size:11px;margin-left:6px;'>· {entry_date}</span></div>"
-            f"<div><span class='label'>Latest</span> "
-            f"<span class='mono' style='margin-left:8px;color:var(--text);font-weight:600;'>${cur_price:,.2f}</span></div>"
-            f"<div><span class='label'>Δ</span> "
-            f"<span class='mono {cur_class}' style='margin-left:8px;font-weight:600;font-size:14px;'>"
-            f"{'+' if cur_pct >= 0 else ''}{cur_pct:.2f}%</span></div>"
-            f"<div><span class='label'>Trades</span> "
-            f"<span class='mono' style='margin-left:8px;color:var(--text-2);'>"
-            f"{len(entry_xs)} buy · {len(exit_xs)} sell</span></div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-
-        # Build the chart
-        line_color = "#00C896" if cur_pct >= 0 else "#FF4757"
-        rgb = "0,200,150" if cur_pct >= 0 else "255,71,87"
-
+        # ─── Build chart ───────────────────────────────────────────────
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=xs, y=ys, mode="lines", name=ticker,
-            line=dict(color=line_color, width=2, shape="spline", smoothing=0.3),
-            fill="tozeroy", fillcolor=f"rgba({rgb},0.08)",
-            hovertemplate=f"<b>{ticker}</b><br>%{{x}}<br>%{{y:+.2f}}%<extra></extra>",
-            showlegend=False,
-        ))
 
-        # Cost basis at 0%
+        # Lines (with subtle fill in single mode only)
+        for d in datasets:
+            trace_kwargs = dict(
+                x=d["xs"], y=d["ys"], mode="lines", name=d["ticker"],
+                line=dict(color=d["color"], width=2, shape="spline", smoothing=0.3),
+                hovertemplate=f"<b>{d['ticker']}</b><br>%{{x}}<br>%{{y:+.2f}}%<extra></extra>",
+                showlegend=not is_single,  # legend = ticker names in multi; hidden in single
+            )
+            if is_single:
+                trace_kwargs["fill"] = "tozeroy"
+                trace_kwargs["fillcolor"] = f"rgba({d['rgb']},0.08)"
+            fig.add_trace(go.Scatter(**trace_kwargs))
+
+        # Cost basis at 0% (shared reference — each ticker has its own dollar basis,
+        # but they all anchor to 0% on this chart)
+        cb_label = (f"Cost basis  ${datasets[0]['entry_price']:,.2f}"
+                    if is_single else "Cost basis (each ticker)")
         fig.add_hline(
             y=0, line=dict(color="#3a3a3a", width=1, dash="dot"),
-            annotation_text=f"Cost basis  ${entry_price:,.2f}",
+            annotation_text=cb_label,
             annotation_position="bottom right",
             annotation_font=dict(color="#888", size=10, family="Menlo, Consolas, monospace"),
         )
 
-        # Portfolio init vertical marker
-        if init_date and xs[0] <= init_date <= xs[-1]:
-            init_label = "Portfolio init" if init_date != entry_date else "Init / entry"
-            fig.add_vline(
-                x=init_date, line=dict(color="#FFB800", width=1, dash="dash"),
-                annotation_text=init_label, annotation_position="top right",
-                annotation_font=dict(color="#FFB800", size=10, family="Menlo, Consolas, monospace"),
-            )
+        # Portfolio init vertical marker (shared) — split line + annotation
+        # to avoid Plotly's mean-of-string-dates bug
+        init_date = state["valuation"][0]["date"] if state.get("valuation") else None
+        if init_date:
+            x_min = min(d["xs"][0] for d in datasets)
+            x_max = max(d["xs"][-1] for d in datasets)
+            if x_min <= init_date <= x_max:
+                init_label = "Portfolio init"
+                if is_single and datasets[0]["entry_date"] == init_date:
+                    init_label = "Init / entry"
+                fig.add_vline(
+                    x=init_date,
+                    line=dict(color="#FFB800", width=1, dash="dash"),
+                )
+                fig.add_annotation(
+                    x=init_date, y=1, yref="paper",
+                    text=init_label, showarrow=False,
+                    xanchor="left", yanchor="top",
+                    xshift=4, yshift=-2,
+                    font=dict(color="#FFB800", size=10,
+                                family="Menlo, Consolas, monospace"),
+                )
 
-        # Entry markers
-        if entry_xs:
-            fig.add_trace(go.Scatter(
-                x=entry_xs, y=entry_ys, customdata=entry_meta,
-                mode="markers", name="Buy",
-                marker=dict(symbol="triangle-up", size=14, color="#00C896",
-                              line=dict(color="#0a0a0a", width=1.5)),
-                hovertemplate=("<b>BUY</b>  $%{customdata[0]:,.2f}<br>"
-                               "%{x}<br>"
-                               "Px $%{customdata[1]:,.2f}<br>"
-                               "%{y:+.2f}% from cost<extra></extra>"),
-            ))
+        # Trade markers — semantic green/red triangles in both modes (standard
+        # financial-charting convention; ticker identity comes from hover)
+        for d in datasets:
+            if d["entry_xs"]:
+                fig.add_trace(go.Scatter(
+                    x=d["entry_xs"], y=d["entry_ys"], customdata=d["entry_meta"],
+                    mode="markers", name="Buy",
+                    marker=dict(symbol="triangle-up", size=14, color="#00C896",
+                                  line=dict(color="#0a0a0a", width=1.5)),
+                    hovertemplate=("<b>%{customdata[2]} BUY</b>  $%{customdata[0]:,.2f}<br>"
+                                   "%{x}<br>"
+                                   "Px $%{customdata[1]:,.2f}<br>"
+                                   "%{y:+.2f}% from cost<extra></extra>"),
+                    showlegend=is_single,  # avoid N "Buy" entries in multi mode
+                ))
+            if d["exit_xs"]:
+                fig.add_trace(go.Scatter(
+                    x=d["exit_xs"], y=d["exit_ys"], customdata=d["exit_meta"],
+                    mode="markers", name="Sell",
+                    marker=dict(symbol="triangle-down", size=14, color="#FF4757",
+                                  line=dict(color="#0a0a0a", width=1.5)),
+                    hovertemplate=("<b>%{customdata[3]} %{customdata[2]}</b>  $%{customdata[0]:,.2f}<br>"
+                                   "%{x}<br>"
+                                   "Px $%{customdata[1]:,.2f}<br>"
+                                   "%{y:+.2f}% from cost<extra></extra>"),
+                    showlegend=is_single,
+                ))
 
-        # Exit markers
-        if exit_xs:
-            fig.add_trace(go.Scatter(
-                x=exit_xs, y=exit_ys, customdata=exit_meta,
-                mode="markers", name="Sell",
-                marker=dict(symbol="triangle-down", size=14, color="#FF4757",
-                              line=dict(color="#0a0a0a", width=1.5)),
-                hovertemplate=("<b>%{customdata[2]}</b>  $%{customdata[0]:,.2f}<br>"
-                               "%{x}<br>"
-                               "Px $%{customdata[1]:,.2f}<br>"
-                               "%{y:+.2f}% from cost<extra></extra>"),
-            ))
+        # ─── Y-axis range — explicit, always includes 0, handles negatives ─
+        # Goal: line of sight on actual variation, with 0% (cost basis) always
+        # visible and a minimum 5pp window so trivial moves don't look extreme.
+        # Asymmetric padding (40% below / 60% above) leaves room for top labels.
+        all_ys = [y for d in datasets for y in d["ys"]]
+        data_min = min(all_ys + [0])    # always include the cost basis line
+        data_max = max(all_ys + [0])
+        data_spread = data_max - data_min
+        target_spread = max(data_spread * 1.30, 5.0)
+        extra = target_spread - data_spread
+        y_range = [data_min - extra * 0.40, data_max + extra * 0.60]
 
         fig.update_layout(
             height=380, margin=dict(l=10, r=10, t=30, b=20),
@@ -312,6 +397,7 @@ def _render_component_chart(state: dict) -> None:
                 showline=False, zeroline=False,
             ),
             yaxis=dict(
+                range=y_range,
                 gridcolor="#1a1a1a",
                 tickfont=dict(color="#888", family="Menlo, Consolas, monospace", size=10),
                 ticksuffix="%",
