@@ -192,7 +192,7 @@ The JSON array must use exactly these four keys: ticker, name, weight, why. No o
 
 Write only the prompt text itself — no preamble, no explanation, no meta-commentary."""
 
-    return _call_gemini(meta, with_search=False, temperature=0.5, max_tokens=4096)
+    return _call_gemini(meta, with_search=False, temperature=0.5, max_tokens=8192)
 
 
 # ────────────────────────────────────────────────────────────────────
