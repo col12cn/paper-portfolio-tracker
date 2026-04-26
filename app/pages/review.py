@@ -580,13 +580,13 @@ def _render_decision_journal(state: dict) -> None:
                     )
 
                 # Add a new reflection
-                pm_key = f"pm_input_{t['timestamp']}"
+                pm_key = f"pm_input_{i}"
                 new_note = st.text_area(
                     "Add a reflection — how is this position playing out vs your thesis?",
                     key=pm_key, height=70,
                     placeholder="e.g. NVDA earnings beat as expected; raising target. Or: thesis broken — sell.",
                 )
-                if st.button("Save reflection", key=f"pm_save_{t['timestamp']}"):
+                if st.button("Save reflection", key=f"pm_save_{i}"):
                     if new_note.strip():
                         # Find the trade in the live state and append
                         for live_t in state["tradeLog"]:
