@@ -856,6 +856,7 @@ The cycle: prosperity → optimism → risk-on → leverage → excess → break
 
 **Practical use:** before adding risk, ask whether the macro setup rewards or punishes risk-taking right now. Cash is a position.
 """)
+def render() -> None:
     state = get_state()
     nav = get_portfolio_value(state)
 
@@ -889,4 +890,3 @@ The cycle: prosperity → optimism → risk-on → leverage → excess → break
     _render_correlation_matrix(state, classified)
     _render_drawdown(state)
     _portfolio_beta(state, nav)
-    _render_framework_references()
